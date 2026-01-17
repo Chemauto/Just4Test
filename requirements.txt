@@ -9,3 +9,26 @@ numpy>=1.21.0
 # 科学计算库 - 用于空间变换!
 # Scientific Computing Library - for spatial transformations
 scipy>=1.7.0
+
+# ========== RealBase 硬件控制依赖 ==========
+# RealBase Hardware Control Dependencies
+
+# 串口通信 - 用于与舵机控制器通信
+# Serial communication - for servo controller communication
+pyserial
+
+# 舵机SDK - FEETECH舵机控制
+# Servo SDK - FEETECH servo control
+scservo-sdk
+
+# 配置管理
+# Configuration management
+draccus
+
+# 深度比较 - 用于数据对比
+# Deep comparison - for data comparison
+deepdiff
+
+# 进度条显示
+# Progress bar display
+tqdm
