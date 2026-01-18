@@ -11,6 +11,7 @@ This project is a comprehensive mobile robot control framework built on MuJoCo p
 - 🎯 **双层控制架构** - 底层速度控制 + 高层 PID 导航
 - 🌍 **全局坐标系导航** - 基于航位推算的点对点导航
 - 🎮 **多种控制方式** - 键盘控制、轨迹跟踪、路径规划
+- 🕹️ **手柄模拟器** - 虚拟Xbox手柄，支持pygame兼容接口 ⭐ NEW
 - 🔌 **硬件接口** - 支持实际机器人控制（Feetech STS3215 舵机）
 - 📚 **完整文档** - 详细的使用说明和故障排除指南
 
@@ -43,6 +44,21 @@ LekiwiTest/
 │   ├── calibration_gui.py          # 电机标定工具
 │   ├── motors/                     # Feetech 舵机驱动
 │   └── requirements.txt            # 硬件依赖
+│
+├── Project4_SimJoy/                # Xbox手柄模拟器 ⭐ NEW
+│   ├── src/                        # 源代码
+│   │   ├── main.py                 # 程序入口
+│   │   ├── virtual_joystick.py     # 核心手柄类
+│   │   ├── joystick_ui.py          # GUI界面
+│   │   ├── joystick_state.py       # 状态管理
+│   │   └── components/             # UI组件
+│   │       ├── button.py           # 按钮组件
+│   │       ├── stick.py            # 摇杆组件
+│   │       ├── trigger.py          # 扳机组件
+│   │       └── dpad.py             # 方向键组件
+│   ├── test/                       # 测试脚本
+│   ├── examples/                   # 示例代码
+│   └── requirements.txt            # 手柄模拟器依赖
 │
 ├── requirements.txt                # 仿真环境依赖
 └── README.md                       # 本文件
@@ -218,19 +234,85 @@ python motor_controller.py
 
 ---
 
-## 📊 平台对比 / Platform Comparison
+### 4️⃣ Xbox手柄模拟器 (Joystick Simulator) ⭐ NEW
 
-| 特性 / Feature | 2WD 差速 / Differential | 3WD 全向 / Omnidirectional |
-|----------------|------------------------|---------------------------|
-| **移动方式** | 前进 + 转向 | 前后左右 + 原地旋转 |
-| **运动自由度** | 2 DOF | 3 DOF (全向) |
-| **执行器数量** | 2 | 3 |
-| **控制复杂度** | 简单 | 中等 |
-| **适用场景** | 基础学习、简单任务 | 精确定位、狭窄空间、全向移动 |
-| **导航支持** | ❌ 仅手动控制 | ✅ 全局坐标系导航 |
-| **代码位置** | `Mujoco4CarTest/` | `Mujoco4Nano/` ⭐ |
+图形化的虚拟Xbox手柄，提供pygame兼容接口，可用于开发和测试。
+
+```bash
+cd Project4_SimJoy
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动手柄模拟器
+python src/main.py
+
+# 或使用启动脚本
+./run.sh
+```
+
+**核心特性 / Key Features:**
+- ✅ **完整Xbox手柄布局** - 8个按钮 + 2个摇杆 + 2个扳机 + D-PAD
+- ✅ **图形化界面** - PyQt5实现的仿真手柄UI
+- ✅ **鼠标交互** - 点击按钮、拖拽摇杆
+- ✅ **pygame兼容** - 提供与pygame.joystick相同的API
+- ✅ **实时状态显示** - 底部面板显示所有按键和轴的状态
+
+**按键映射 / Button Mapping:**
+```
+按钮 (button_id):
+- A(0), B(1), X(2), Y(3)  # ABXY按键
+- LB(4), RB(5)             # 肩键
+- SELECT(6), START(7)       # 功能键
+
+轴 (axis_id):
+- LX(0), LY(1)              # 左摇杆 [-1, 1]
+- LT(2)                     # 左扳机 [0, 1]
+- RX(3), RY(4)              # 右摇杆 [-1, 1]
+- RT(5)                     # 右扳机 [0, 1]
+
+方向键 (hat):
+- D-PAD                    # 8方向，返回(x, y)元组
+```
+
+**代码示例 / Code Example:**
+```python
+from Project4_SimJoy.src.virtual_joystick import VirtualJoystick
+
+# 创建虚拟手柄
+joystick = VirtualJoystick(0)
+
+# 读取按键状态
+if joystick.get_button(0):  # A键
+    print("Button A pressed")
+
+# 读取摇杆位置
+lx = joystick.get_axis(0)  # 左摇杆X [-1, 1]
+ly = joystick.get_axis(1)  # 左摇杆Y [-1, 1]
+
+# 读取方向键
+hat_x, hat_y = joystick.get_hat(0)  # (-1,0,1), (-1,0,1)
+
+# 与机器人控制集成
+def control_robot(joystick):
+    vx = joystick.get_axis(0) * 0.5  # 前后速度
+    vy = joystick.get_axis(1) * 0.5  # 左右速度
+    omega = joystick.get_axis(3) * 1.0  # 旋转速度
+
+    return vx, vy, omega
+```
+
+**应用场景 / Applications:**
+- 🎮 **远程控制** - 通过虚拟手柄控制仿真机器人
+- 🧪 **开发测试** - 在没有物理手柄时测试手柄控制逻辑
+- 📚 **学习参考** - 学习pygame joystick API使用
+- 🔧 **接口验证** - 验证手柄控制接口的正确性
+
+**详细文档:** 查看 [`Project4_SimJoy/README.md`](Project4_SimJoy/README.md) 获取完整使用说明和API文档。
 
 ---
+
+
 
 ## 🔧 技术细节 / Technical Details
 
@@ -307,6 +389,12 @@ numpy >= 1.21.0
 scipy >= 1.7.0
 ```
 
+### 手柄模拟器 / Joystick Simulator
+```
+PyQt5 >= 5.15.0
+numpy >= 1.19.0
+```
+
 ### 硬件控制 / Hardware Control
 ```
 pyserial
@@ -322,27 +410,11 @@ tqdm        # 进度条
 
 ---
 
-## 📖 参考资料 / References
-
-- **MuJoCo 文档**: https://mujoco.readthedocs.io/
-- **LeKiwi 项目**: `/home/dora/RoboOs/New/doralekiwi/lekiwi`
-- **Feetech 舵机**: https://www.feetechrc.com/
-
----
-
-## 🎯 应用场景 / Applications
-
-- 🎓 **机器人教育** - 学习控制理论和机器人学
-- 🔬 **算法开发** - 在仿真中测试控制算法
-- 📈 **导航研究** - PID 控制调优和路径规划
-- 🤖 **竞赛机器人** - 全向移动机器人控制
-- 🏭 **实际应用** - 仓储物流、服务机器人
-
----
 
 ## 📝 更新日志 / Changelog
 
 ### 主要功能更新
+- **2026-01-18**: 添加Xbox手柄模拟器（Project4_SimJoy）- 图形化虚拟手柄，支持pygame兼容接口
 - **2026-01-16**: 增加全局坐标系导航系统（基于航位推算的 PID 控制）
 - **2026-01-15**: 完善三麦克纳姆轮平台仿真和文档
 - **2026-01-14**: 添加双轮差速小车基础控制
@@ -350,8 +422,4 @@ tqdm        # 进度条
 
 ---
 
-**最后更新 / Last Updated**: 2026-01-16
-
-**维护者 / Maintainer**: Lekiwi Development Team
-
-**许可证 / License**: 详见项目根目录 LICENSE 文件
+**最后更新 / Last Updated**: 2026-01-18
