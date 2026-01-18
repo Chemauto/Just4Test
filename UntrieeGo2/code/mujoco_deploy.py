@@ -5,17 +5,29 @@ MuJoCo部署脚本 - 专门为MuJoCo训练的策略
 - 关节顺序: FL, FR, RL, RR
 - Actuator顺序: FR, FL, RR, RL
 - 默认位置: [0, 0.9, -1.8]
+
+交互模式:
+- 机器人持续执行当前命令
+- 随时输入新命令改变速度
+- Ctrl+C 或输入 'q' 退出
+- 后台运行时自动进入演示模式
 """
 import os
 os.environ['MUJOCO_GL'] = 'egl'
 
 import numpy as np
 import time
-import threading
 import mujoco
 import mujoco.viewer
 from scipy.spatial.transform import Rotation as R
 import torch
+import threading
+import sys
+
+# 检测是否在交互模式
+def is_interactive():
+    """检测是否在交互终端中运行"""
+    return sys.stdin.isatty()
 
 
 class MuJoCoPolicy:
@@ -124,13 +136,21 @@ class MuJoCoDemo:
         # MuJoCo配置（从XML）
         # 关节定义顺序 (Joint 1-12): FL_hip, FL_thigh, FL_calf, FR_hip, FR_thigh, FR_calf, RL_hip, RL_thigh, RL_calf, RR_hip, RR_thigh, RR_calf
         # Actuator顺序: FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf, RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf
-        # 默认位置: [0, 0.9, -1.8] (hip, thigh, calf)
 
         self.joint_indices = list(range(1, 13))  # Joint 1-12
         self.actuator_indices = list(range(12))
 
-        # 默认关节位置（所有腿相同）
-        self.default_pos = np.array([0.0, 0.9, -1.8] * 4)
+        # IsaacLab默认位置（FL, FR, RL, RR顺序）
+        # FL: [0.1, 0.8, -1.5]
+        # FR: [-0.1, 0.8, -1.5]
+        # RL: [0.1, 1.0, -1.5]
+        # RR: [-0.1, 1.0, -1.5]
+        self.default_pos = np.array([
+            0.1, 0.8, -1.5,   # FL
+            -0.1, 0.8, -1.5,  # FR
+            0.1, 1.0, -1.5,   # RL
+            -0.1, 1.0, -1.5,  # RR
+        ])
 
         # Actuator到Joint的映射 (actuator -> joint index)
         # Actuator: FR(0-2), FL(3-5), RR(6-8), RL(9-11)
@@ -161,11 +181,11 @@ class MuJoCoDemo:
 
     def reset_to_initial_state(self):
         """重置到初始状态"""
-        # 设置基座位置（从keyframe: 0 0 0.27）
-        self.data.qpos[0:3] = [0, 0, 0.27]
+        # 设置基座位置（IsaacLab: 0 0 0.4）
+        self.data.qpos[0:3] = [0, 0, 0.4]
         self.data.qpos[3:7] = [1, 0, 0, 0]  # 四元数
 
-        # 设置关节位置（从keyframe: 0 0.9 -1.8 重复4次）
+        # 设置关节位置（IsaacLab默认位置，FL,FR,RL,RR顺序）
         self.data.qpos[7:19] = self.default_pos
 
         # 设置速度为0
@@ -180,12 +200,14 @@ class MuJoCoDemo:
         print(f"\n[重置] 初始状态:")
         print(f"  基座高度: {self.data.qpos[2]:.3f}")
         print(f"  关节位置(FL): {self.data.qpos[8:11]}")
+        print(f"  期望位置(FL): {self.default_pos[:3]}")
 
     def get_observation(self):
         """构建观测（235维）"""
-        # 读取关节状态（FL, FR, RL, RR顺序）
-        joint_pos = np.array([self.data.qpos[j + 6] for j in self.joint_indices])
-        joint_vel = np.array([self.data.qvel[j + 5] for j in self.joint_indices])
+        # 按joint定义顺序构建（FL, FR, RL, RR）
+        # 因为IsaacLab训练时用的是这个顺序（preserve_order=True）
+        joint_pos = np.array([self.data.qpos[jid + 6] for jid in self.joint_indices])
+        joint_vel = np.array([self.data.qvel[jid + 5] for jid in self.joint_indices])
 
         # 相对于默认位置
         joint_pos_rel = joint_pos - self.default_pos
@@ -227,9 +249,20 @@ class MuJoCoDemo:
         # 获取观测
         obs = self.get_observation()
 
-        # 获取动作（FL, FR, RL, RR顺序）
-        action = self.policy.get_action(obs)
-        self.last_action = action.copy()
+        # 获取动作（FL, FR, RL, RR顺序，IsaacLab训练顺序）
+        isaaclab_action = self.policy.get_action(obs)
+        self.last_action = isaaclab_action.copy()
+
+        # 将IsaacLab顺序(FL,FR,RL,RR)映射到MuJoCo actuator顺序(FR,FL,RR,RL)
+        # FL(0-2) -> actuator 3-5
+        # FR(3-5) -> actuator 0-2
+        # RL(6-8) -> actuator 9-11
+        # RR(9-11) -> actuator 6-8
+        mujoco_action = np.zeros(12)
+        mujoco_action[0:3] = isaaclab_action[3:6]    # FR
+        mujoco_action[3:6] = isaaclab_action[0:3]    # FL
+        mujoco_action[6:9] = isaaclab_action[9:12]   # RR
+        mujoco_action[9:12] = isaaclab_action[6:9]   # RL
 
         # 调试输出（前100步）
         if not hasattr(self, '_step_count'):
@@ -237,19 +270,23 @@ class MuJoCoDemo:
         self._step_count += 1
 
         if self._step_count <= 100 and self._step_count % 20 == 0:
-            joint_pos = np.array([self.data.qpos[j + 6] for j in self.joint_indices])
+            fl_pos = self.data.qpos[8:11]  # FL joints 1-3 -> qpos 8-10
+            fr_pos = self.data.qpos[11:14] # FR joints 4-6 -> qpos 11-13
+
             quat = self.data.qpos[3:7].copy()
             quat_xyzw = np.array([quat[1], quat[2], quat[3], quat[0]])
             rotation = R.from_quat(quat_xyzw)
             proj_grav = rotation.inv().apply(np.array([0.0, 0.0, -1.0]))
 
             print(f"[调试] 步骤{self._step_count}:")
-            print(f"  动作(FL): {action[:3]}")
-            print(f"  关节(FL): {joint_pos[:3]}")
+            print(f"  IsaacLab动作(FL): {isaaclab_action[:3]}")
+            print(f"  IsaacLab动作(FR): {isaaclab_action[3:6]}")
+            print(f"  关节(FL): {fl_pos}")
+            print(f"  关节(FR): {fr_pos}")
             print(f"  基座高度: {self.data.qpos[2]:.3f}")
             print(f"  投影重力: {proj_grav}")
 
-        # 应用控制到actuators
+        # 应用控制到actuators（FR, FL, RR, RL顺序）
         for i in range(12):
             aid = self.actuator_indices[i]
             jid = self.actuator_to_joint[i]
@@ -258,13 +295,11 @@ class MuJoCoDemo:
             current_pos = self.data.qpos[jid + 6]
             current_vel = self.data.qvel[jid + 5]
 
-            # 目标位置 = 默认 + 动作偏移
-            target_pos = self.default_pos[i] + action[i]
+            # 目标位置 = 默认 + MuJoCo动作
+            target_pos = self.default_pos[i] + mujoco_action[i]
 
             # PD控制
             torque = self.kp * (target_pos - current_pos) - self.kd * current_vel
-
-            # 限制力矩（IsaacLab effort_limit = 33.5）
             torque = np.clip(torque, -33.5, 33.5)
 
             self.data.ctrl[aid] = torque
@@ -272,69 +307,156 @@ class MuJoCoDemo:
         # 仿真步进
         mujoco.mj_step(self.model, self.data)
 
-    def run(self):
-        """运行仿真"""
-        self.print_help()
-
-        # 输入线程
-        input_thread = threading.Thread(target=self.input_loop, daemon=True)
-        input_thread.start()
-
-        # 主循环
-        with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
-            step_count = 0
-            last_time = time.time()
-
-            # 重置
-            print("\n重置到初始状态...")
-            self.reset_to_initial_state()
-            time.sleep(0.5)
-
-            print("\n开始仿真...")
-
-            while viewer.is_running() and self.running:
-                self.step()
-
-                step_count += 1
-                if step_count % 100 == 0:
-                    base_pos = self.data.qpos[0:3]
-                    base_vel = self.data.qvel[0:3]
-                    elapsed = time.time() - last_time
-                    fps = 100 / (elapsed + 1e-6)
-
-                    print(f"[状态] 步骤:{step_count} | "
-                          f"位置:[{base_pos[0]:.2f}, {base_pos[1]:.2f}, {base_pos[2]:.2f}] | "
-                          f"速度:[{base_vel[0]:.2f}, {base_vel[1]:.2f}] | "
-                          f"命令:[{self.vx:.2f}, {self.vy:.2f}, {self.wz:.2f}] | "
-                          f"FPS:{fps:.1f}")
-
-                    last_time = time.time()
-
-                viewer.sync()
-                time.sleep(1.0/60.0)
-
-        print("\n仿真结束")
-
-    def input_loop(self):
-        """输入循环"""
+    def _input_loop(self):
+        """输入线程 - 在后台等待用户输入"""
         while self.running:
             try:
-                cmd = input("\n请输入速度命令 (vx vy wz) 或 'q' 退出: ").strip()
-
+                cmd = input("> ").strip()
                 if cmd.lower() == 'q':
                     self.running = False
                     break
-
-                parts = cmd.split()
-                if len(parts) == 3:
-                    self.vx = float(parts[0])
-                    self.vy = float(parts[1])
-                    self.wz = float(parts[2])
-                    print(f"✓ 速度命令已更新: vx={self.vx:.2f}, vy={self.vy:.2f}, wz={self.wz:.2f}")
+                elif cmd.lower() == 's':
+                    # 停止命令
+                    self.vx = 0.0
+                    self.vy = 0.0
+                    self.wz = 0.0
+                    print(f"✓ 已停止: vx=0.00, vy=0.00, wz=0.00")
                 else:
-                    print("✗ 格式错误")
-            except:
+                    parts = cmd.split()
+                    if len(parts) == 3:
+                        try:
+                            self.vx = float(parts[0])
+                            self.vy = float(parts[1])
+                            self.wz = float(parts[2])
+                            print(f"✓ 命令已更新: vx={self.vx:.2f}, vy={self.vy:.2f}, wz={self.wz:.2f}")
+                        except ValueError:
+                            print("✗ 格式错误，请输入三个数字")
+                    else:
+                        print("✗ 格式错误，请输入: vx vy wz，或输入 's' 停止，'q' 退出")
+            except (EOFError, KeyboardInterrupt):
+                self.running = False
                 break
+
+    def run(self):
+        """运行仿真 - 机器人持续执行当前命令"""
+
+        # 检测是否交互模式
+        interactive = is_interactive()
+
+        if interactive:
+            self.print_help()
+            print("\n模式: 交互控制")
+        else:
+            print("\n模式: 自动演示 (检测到非交互环境)")
+            print("演示序列: 前进 -> 停止 -> 旋转 -> 停止 -> 循环")
+
+        # 重置
+        print("\n重置到初始状态...")
+        self.reset_to_initial_state()
+        time.sleep(0.5)
+
+        # 主控制循环
+        with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
+            step_count = 0
+            last_print_time = time.time()
+
+            # 演示模式: 定义命令序列
+            demo_sequence = [
+                (0.0, 0.0, 0.0, 3.0),  # 站立 3秒
+                (0.3, 0.0, 0.0, 5.0),  # 前进 5秒
+                (0.0, 0.0, 0.0, 2.0),  # 停止 2秒
+                (0.0, 0.0, 0.5, 4.0),  # 旋转 4秒
+                (0.0, 0.0, 0.0, 2.0),  # 停止 2秒
+            ]
+            demo_idx = 0
+            demo_start_time = time.time()
+
+            # 交互模式: 先获取第一个命令
+            if interactive:
+                print("\n开始仿真...")
+                print("\n" + "=" * 60)
+                print(f"当前命令: vx={self.vx:.2f}, vy={self.vy:.2f}, wz={self.wz:.2f}")
+                print("=" * 60)
+                print("\n使用说明:")
+                print("  0.5 0 0  - 前进 0.5 m/s (机器人持续执行)")
+                print("  s        - 停止 (保持站立)")
+                print("  q        - 退出")
+                print("=" * 60)
+                print("\n请输入命令:")
+
+                try:
+                    cmd = input("> ").strip()
+                    if cmd.lower() == 'q':
+                        print("退出仿真...")
+                        return
+                    elif cmd.lower() == 's':
+                        self.vx = 0.0
+                        self.vy = 0.0
+                        self.wz = 0.0
+                        print(f"✓ 已停止: vx=0.00, vy=0.00, wz=0.00")
+                    else:
+                        parts = cmd.split()
+                        if len(parts) == 3:
+                            self.vx = float(parts[0])
+                            self.vy = float(parts[1])
+                            self.wz = float(parts[2])
+                            print(f"✓ 命令已更新: vx={self.vx:.2f}, vy={self.vy:.2f}, wz={self.wz:.2f}")
+                        else:
+                            print("格式错误，使用默认命令 (0 0 0)")
+                except (EOFError, KeyboardInterrupt, ValueError):
+                    print("输入错误，使用默认命令 (0 0 0)")
+
+                print("\n机器人正在执行命令... (随时输入新命令改变运动)")
+                print("提示: 在下方输入新命令，按 Enter 立即生效\n")
+
+            # 启动输入线程（仅在交互模式）
+            if interactive:
+                self.running = True
+                input_thread = threading.Thread(target=self._input_loop, daemon=True)
+                input_thread.start()
+
+            try:
+                while viewer.is_running() and self.running:
+                    # 演示模式: 自动切换命令
+                    if not interactive:
+                        vx, vy, wz, duration = demo_sequence[demo_idx]
+
+                        # 检查是否需要切换
+                        elapsed = time.time() - demo_start_time
+                        if elapsed >= duration:
+                            demo_idx = (demo_idx + 1) % len(demo_sequence)
+                            demo_start_time = time.time()
+                            vx, vy, wz, duration = demo_sequence[demo_idx]
+                            print(f"\n[自动演示] 切换命令: vx={vx:.1f}, vy={vy:.1f}, wz={wz:.1f}")
+
+                        self.vx, self.vy, self.wz = vx, vy, wz
+
+                    # 执行控制
+                    self.step()
+
+                    step_count += 1
+
+                    # 每秒打印一次状态
+                    current_time = time.time()
+                    if current_time - last_print_time >= 1.0:
+                        base_pos = self.data.qpos[0:3]
+                        base_vel = self.data.qvel[0:3]
+
+                        mode_str = "交互" if interactive else "演示"
+                        print(f"\r[{mode_str}] 步骤:{step_count} | 命令:[{self.vx:.2f}, {self.vy:.2f}, {self.wz:.2f}] | "
+                              f"位置:[{base_pos[0]:.2f}, {base_pos[1]:.2f}, {base_pos[2]:.2f}] | "
+                              f"速度:[{base_vel[0]:.2f}, {base_vel[1]:.2f}]", end="", flush=True)
+                        last_print_time = current_time
+
+                    viewer.sync()
+                    time.sleep(1.0/60.0)
+
+            except KeyboardInterrupt:
+                print("\n\n用户中断")
+            finally:
+                self.running = False
+
+        print("\n仿真结束")
 
     def print_help(self):
         """打印帮助"""
@@ -346,8 +468,8 @@ class MuJoCoDemo:
         print("    0.5 0.0 0.0   - 前进 0.5 m/s")
         print("    0.0 0.3 0.0   - 向左平移 0.3 m/s")
         print("    0.0 0.0 0.5   - 原地旋转 0.5 rad/s")
-        print("    0.0 0.0 0.0   - 停止")
-        print("  输入 'q' 退出")
+        print("    s            - 停止 (保持站立)")
+        print("    q            - 退出")
         print("=" * 60)
 
 
