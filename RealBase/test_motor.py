@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-测试三全向轮底盘运动学
-用于验证运动学公式是否正确
+3全向轮底盘测试程序
+提供交互式菜单测试各种运动模式
 """
 
 import time
@@ -29,11 +29,12 @@ def test_movement(controller):
             print("  5 - 斜向测试 (vx=1, vy=1)")
             print("  6 - 原地旋转测试 (omega=1)")
             print("  7 - 前进+旋转测试 (vx=1, omega=0.5)")
-            print("  8 - 退出")
+            print("  8 - 单轮控制测试")
+            print("  9 - 返回主菜单")
 
-            choice = input("\n请选择 (1-8): ").strip()
+            choice = input("\n请选择 (1-9): ").strip()
 
-            if choice == '8':
+            if choice == '9':
                 break
 
             duration = 2.0  # 每个测试2秒
@@ -59,6 +60,9 @@ def test_movement(controller):
             elif choice == '7':
                 print("\n[前进+旋转测试] 机器人应该边前进边旋转...")
                 controller.set_velocity(linear_speed=0.2, vx=1, vy=0, omega=0.5)
+            elif choice == '8':
+                test_single_wheel(controller)
+                continue
             else:
                 print("无效选择!")
                 continue
@@ -99,8 +103,6 @@ def test_movement(controller):
             print(f"\n错误: {e}")
             import traceback
             traceback.print_exc()
-
-    print("\n测试结束!")
 
 
 def test_single_wheel(controller):
@@ -180,9 +182,13 @@ def main():
     controller = OmniWheelController(port="/dev/ttyACM0")
 
     print("="*60)
-    print("三全向轮底盘测试程序")
+    print("3全向轮底盘测试程序")
     print("="*60)
     print(f"\n电机ID配置: {controller.WHEEL_IDS}")
+    print(f"轮子半径: {controller.wheel_radius}m")
+    print(f"机器人半径: {controller.robot_radius}m")
+    print(f"最大原始速度: {controller.max_raw}")
+    print(f"速度缩放因子: {controller.velocity_scale} (所有速度将乘以该值)")
 
     # 连接
     print("\n正在连接底盘...")
@@ -200,7 +206,7 @@ def main():
             print("="*60)
             print("  1 - 运动学测试 (前进/后退/横移/旋转)")
             print("  2 - 单轮控制测试")
-            print("  3 - 退出")
+            print("  3 - 退出程序")
 
             choice = input("\n请选择 (1-3): ").strip()
 

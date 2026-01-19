@@ -22,11 +22,20 @@ class OmniWheelController:
     # 电机ID配置 - 修改这里即可更改所有电机ID
     WHEEL_IDS = [13, 14, 15]
 
+    # 轮子配置 - 参考lerobot lekiwi设计
+    WHEEL_RADIUS = 0.05  # 轮子半径 (米)
+    BASE_RADIUS = 0.125  # 从机器人中心到轮子的距离 (米)
+    MAX_RAW_VELOCITY = 3000  # 最大原始速度值 (ticks)
+    STEPS_PER_DEG = 4096.0 / 360.0  # 每度的步数
+    VELOCITY_SCALE = 0.3  # 全局速度缩放因子 (0-1), 用于降低实际输出速度
+
     def __init__(
         self,
         port: str = "/dev/ttyACM0",
-        wheel_radius: float = 0.05,  # 轮子半径(米)
-        robot_radius: float = 0.15,  # 机器人半径(米),从中心到轮子的距离
+        wheel_radius: float = WHEEL_RADIUS,
+        robot_radius: float = BASE_RADIUS,
+        max_raw: int = MAX_RAW_VELOCITY,
+        velocity_scale: float = VELOCITY_SCALE,
     ):
         """初始化底盘控制器
 
@@ -34,29 +43,65 @@ class OmniWheelController:
             port: 串口端口
             wheel_radius: 轮子半径(米)
             robot_radius: 从机器人中心到轮子的距离(米)
+            max_raw: 最大原始速度值(ticks),用于速度限制和缩放
+            velocity_scale: 全局速度缩放因子(0-1), 用于降低实际输出速度
         """
         self.port = port
         self.wheel_radius = wheel_radius
         self.robot_radius = robot_radius
+        self.max_raw = max_raw
+        self.velocity_scale = velocity_scale
         self.base_bus = None
 
-        # 计算逆运动学矩阵
-        # 轮子布置角度: 0°, 120°, 240°
-        angles = [0, 2*np.pi/3, 4*np.pi/3]
+        # 轮子布置角度: [240°, 0°, 120°] - 90° 偏移 (参考lerobot)
+        angles = np.radians(np.array([240, 0, 120]) - 90)
 
-        # 构建正运动学矩阵 F_matrix (3x3)
-        # 将轮子角速度映射到机器人速度 [vx, vy, omega]
-        F_matrix = self.wheel_radius * np.array([
-            [np.cos(angles[0]), np.cos(angles[1]), np.cos(angles[2])],
-            [np.sin(angles[0]), np.sin(angles[1]), np.sin(angles[2])],
-            [1/self.robot_radius, 1/self.robot_radius, 1/self.robot_radius]
+        # 构建运动学矩阵 M (3x3)
+        # 将机器人速度[vx, vy, omega]映射到轮子线速度
+        # M[i] = [cos(theta_i), sin(theta_i), base_radius]
+        self.kinematics_matrix = np.array([
+            [np.cos(angles[0]), np.sin(angles[0]), self.robot_radius],
+            [np.cos(angles[1]), np.sin(angles[1]), self.robot_radius],
+            [np.cos(angles[2]), np.sin(angles[2]), self.robot_radius]
         ])
 
         # 逆运动学矩阵 (用于从机器人速度计算轮子速度)
-        self.F_matrix_inv = np.linalg.inv(F_matrix)
+        self.kinematics_matrix_inv = np.linalg.inv(self.kinematics_matrix)
 
-        # 当前轮子控制值 (rad/s)
+        # 当前轮子控制值 (deg/s)
         self.wheel_velocities = np.array([0.0, 0.0, 0.0])
+
+    @staticmethod
+    def _degps_to_raw(degps: float) -> int:
+        """将度/秒转换为原始速度值
+
+        Args:
+            degps: 角速度 (度/秒)
+
+        Returns:
+            原始速度值 (ticks), 范围 [-32768, 32767]
+        """
+        speed_in_steps = degps * OmniWheelController.STEPS_PER_DEG
+        speed_int = int(round(speed_in_steps))
+        # 限制在16位有符号整数范围内
+        if speed_int > 0x7FFF:
+            speed_int = 0x7FFF  # 32767
+        elif speed_int < -0x8000:
+            speed_int = -0x8000  # -32768
+        return speed_int
+
+    @staticmethod
+    def _raw_to_degps(raw_speed: int) -> float:
+        """将原始速度值转换为度/秒
+
+        Args:
+            raw_speed: 原始速度值 (ticks)
+
+        Returns:
+            角速度 (度/秒)
+        """
+        degps = raw_speed / OmniWheelController.STEPS_PER_DEG
+        return degps
 
     def connect(self) -> bool:
         """连接底盘电机
@@ -144,9 +189,10 @@ class OmniWheelController:
                 vx = 0
                 vy = 0
 
-            # 使用逆运动学矩阵计算轮子角速度
+            # 使用运动学矩阵计算机器人速度 -> 轮子线速度 -> 轮子角速度
             robot_velocity = np.array([vx, vy, omega])
-            wheel_angular_velocities = self.F_matrix_inv @ robot_velocity
+            wheel_linear_speeds = self.kinematics_matrix @ robot_velocity
+            wheel_angular_velocities = wheel_linear_speeds / self.wheel_radius
 
             # 保存当前轮子速度
             self.wheel_velocities = wheel_angular_velocities
@@ -176,9 +222,10 @@ class OmniWheelController:
             return False
 
         try:
-            # 使用逆运动学矩阵计算轮子角速度
+            # 使用运动学矩阵计算机器人速度 -> 轮子线速度 -> 轮子角速度
             robot_velocity = np.array([vx, vy, omega])
-            wheel_angular_velocities = self.F_matrix_inv @ robot_velocity
+            wheel_linear_speeds = self.kinematics_matrix @ robot_velocity
+            wheel_angular_velocities = wheel_linear_speeds / self.wheel_radius
 
             # 保存当前轮子速度
             self.wheel_velocities = wheel_angular_velocities
@@ -197,25 +244,59 @@ class OmniWheelController:
 
         Args:
             wheel_angular_velocities: 3个轮子的角速度 (rad/s)
+
+        说明:
+            参考lerobot实现:
+            1. 应用全局速度缩放因子
+            2. 转换 rad/s -> deg/s
+            3. 转换 deg/s -> raw ticks
+            4. 如果任一轮子速度超过max_raw,按比例缩放所有轮子速度
         """
-        # 假设最大角速度为 10 rad/s
-        max_angular_velocity = 10.0
+        # 1. 应用全局速度缩放因子
+        wheel_angular_velocities = wheel_angular_velocities * self.velocity_scale
 
-        for i, wheel_angular_vel in enumerate(wheel_angular_velocities):
-            # 转换为百分比速度
-            speed_percent = min(100, max(0, abs(wheel_angular_vel) / max_angular_velocity * 100))
+        # 2. 转换 rad/s -> deg/s
+        wheel_degps = wheel_angular_velocities * (180.0 / np.pi)
 
-            # 确定方向
-            direction = 1 if wheel_angular_vel >= 0 else -1
+        # 3. 转换为原始值 (用于检查是否需要缩放)
+        raw_floats = [abs(degps) * self.STEPS_PER_DEG for degps in wheel_degps]
+        max_raw_computed = max(raw_floats)
 
-            # 转换为电机速度值
-            velocity_value = int(direction * speed_percent * 10.23)  # 100 * 10.23 = 1023
+        # 4. 如果超过最大值,按比例缩放
+        if max_raw_computed > self.max_raw:
+            scale = self.max_raw / max_raw_computed
+            wheel_degps = wheel_degps * scale
 
-            # 获取电机名称
+        # 5. 转换为原始整数并写入电机
+        for i, degps in enumerate(wheel_degps):
+            velocity_value = self._degps_to_raw(degps)
             motor_name = f"wheel_{i + 1}"
-
-            # 写入速度
             self.base_bus.write("Goal_Velocity", motor_name, velocity_value, normalize=False)
+
+    def wheel_velocities_to_body_velocity(
+        self,
+        wheel_velocities: np.ndarray
+    ) -> dict:
+        """将轮子速度转换为机器人速度
+
+        Args:
+            wheel_velocities: 3个轮子的角速度 (rad/s)
+
+        Returns:
+            机器人速度字典: {"vx": x方向速度(m/s), "vy": y方向速度(m/s), "omega": 角速度(rad/s)}
+        """
+        # 转换 rad/s -> 线速度 m/s
+        wheel_linear_speeds = wheel_velocities * self.wheel_radius
+
+        # 使用逆运动学矩阵求解机器人速度
+        velocity_vector = self.kinematics_matrix_inv @ wheel_linear_speeds
+        vx, vy, omega = velocity_vector
+
+        return {
+            "vx": vx,
+            "vy": vy,
+            "omega": omega
+        }
 
     def get_wheel_velocities(self) -> np.ndarray:
         """获取当前轮子控制速度
