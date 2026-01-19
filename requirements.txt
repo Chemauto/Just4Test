@@ -19,7 +19,7 @@ pyserial
 
 # 舵机SDK - FEETECH舵机控制
 # Servo SDK - FEETECH servo control
-scservo-sdk
+# scservo-sdk
 
 # 配置管理
 # Configuration management
